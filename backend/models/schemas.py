@@ -1,6 +1,6 @@
 from typing import List, Optional
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 # Bible API Schemas
 class BibleVersion(BaseModel):
@@ -47,8 +47,7 @@ class JournalEntryResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Favorite Verse Schemas
 class FavoriteVerseCreate(BaseModel):
@@ -67,8 +66,7 @@ class FavoriteVerseResponse(BaseModel):
     notes: Optional[str] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Search Request Schema
 class SearchRequest(BaseModel):

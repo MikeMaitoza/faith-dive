@@ -5,17 +5,25 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import List
 import os
+from contextlib import asynccontextmanager
 
 from backend.core.config import settings
 from backend.database.connection import get_db, create_tables
 from backend.models import database, schemas
 from backend.services.bible_api import bible_api_service
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize database tables at startup
+    create_tables()
+    yield
+
 # Create FastAPI app
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="A Progressive Web App for Bible verse search and journaling"
+    description="A Progressive Web App for Bible verse search and journaling",
+    lifespan=lifespan,
 )
 
 # Add CORS middleware
@@ -26,11 +34,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Create database tables on startup
-@app.on_event("startup")
-async def startup_event():
-    create_tables()
 
 # Bible API Routes
 @app.get(f"{settings.api_prefix}/bibles", response_model=List[schemas.BibleVersion])
