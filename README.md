@@ -134,4 +134,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - [API.Bible](https://scripture.api.bible/) for providing the Bible text and search API
 - Bootstrap team for the UI framework
-- FastAPI team for the excellent web framework
+- FastAPI team for the excellent web framework# faith-dive
