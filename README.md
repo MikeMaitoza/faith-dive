@@ -55,7 +55,7 @@ A Progressive Web App (PWA) for searching Bible verses and creating personal jou
 
 4. Run the application:
    ```bash
-   poetry run python backend/main.py
+   poetry run python run.py
    ```
 
 5. Open your browser to `http://localhost:8000`
@@ -134,4 +134,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - [API.Bible](https://scripture.api.bible/) for providing the Bible text and search API
 - Bootstrap team for the UI framework
-- FastAPI team for the excellent web framework# faith-dive
+- FastAPI team for the excellent web framework

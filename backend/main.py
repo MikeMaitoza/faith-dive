@@ -181,6 +181,14 @@ if os.path.exists(frontend_build_path):
     @app.get("/")
     async def serve_frontend():
         return FileResponse(os.path.join(frontend_build_path, "index.html"))
+    
+    @app.get("/manifest.json")
+    async def serve_manifest():
+        return FileResponse(os.path.join(frontend_build_path, "manifest.json"))
+    
+    @app.get("/sw.js")
+    async def serve_service_worker():
+        return FileResponse(os.path.join(frontend_build_path, "sw.js"))
 
 # Health check endpoint
 @app.get("/health")
