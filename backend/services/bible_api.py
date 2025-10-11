@@ -76,7 +76,7 @@ class BibleAPIService:
             return []
     
     def search_verses(self, query: str, bible_id: Optional[str] = None, limit: int = 10) -> List[SearchResult]:
-        """Search for verses containing the query text"""
+        """Search for verses containing the query text or by verse reference"""
         try:
             # If no bible_id specified, use the first available English Bible (which will be preferred)
             if not bible_id:
@@ -87,49 +87,21 @@ class BibleAPIService:
                 bible_id = english_bibles[0].id
                 print(f"Using default Bible: {english_bibles[0].name} ({bible_id})")
             
-            # Construct search URL
-            search_url = f"{self.base_url}/bibles/{bible_id}/search"
-            params = {
-                "query": query,
-                "limit": limit,
-                "sort": "relevance"
-            }
-            
-            print(f"Searching for '{query}' in Bible {bible_id}")
-            response = requests.get(search_url, headers=self.headers, params=params)
-            response.raise_for_status()
-            
-            data = response.json()
-            search_results = []
-            
-            # Get Bible info for the results
-            bible_info = self.get_bible_info(bible_id)
-            bible_name = bible_info.get("name", "Unknown Bible") if bible_info else "Unknown Bible"
-            
-            verses_data = data.get("data", {}).get("verses", [])
-            print(f"Found {len(verses_data)} verses")
-            
-            for verse in verses_data:
-                try:
-                    # Handle different possible verse text fields
-                    verse_text = verse.get("text", "")
-                    if not verse_text:
-                        verse_text = verse.get("content", "")
-                    
-                    search_results.append(SearchResult(
-                        verse=VerseContent(
-                            id=verse["id"],
-                            reference=verse["reference"],
-                            content=self._clean_verse_text(verse_text)
-                        ),
-                        bible_id=bible_id,
-                        bible_name=bible_name
-                    ))
-                except KeyError as ke:
-                    print(f"Missing required field in verse data: {ke}")
-                    continue
-            
-            return search_results
+            # Check if this looks like a verse reference
+            if self._is_verse_reference(query):
+                print(f"Detected verse reference: '{query}'")
+                
+                # Try to get the specific verse using structured approach
+                verse_result = self._search_specific_verse(query, bible_id)
+                if verse_result:
+                    return [verse_result]
+                
+                # If specific verse search fails, try keyword-based approach
+                print(f"Specific verse search failed, trying keyword approach...")
+                return self._search_verse_by_keywords(query, bible_id, limit)
+            else:
+                # For non-verse reference queries, use normal search
+                return self._perform_search(query, bible_id, limit)
             
         except requests.RequestException as e:
             print(f"Error searching verses: {e}")
@@ -137,6 +109,271 @@ class BibleAPIService:
                 print(f"Response status: {e.response.status_code}")
                 print(f"Response text: {e.response.text}")
             return []
+    
+    def _perform_search(self, query: str, bible_id: str, limit: int) -> List[SearchResult]:
+        """Perform the actual search API call"""
+        search_url = f"{self.base_url}/bibles/{bible_id}/search"
+        params = {
+            "query": query,
+            "limit": limit,
+            "sort": "relevance"
+        }
+        
+        print(f"Searching for '{query}' in Bible {bible_id}")
+        response = requests.get(search_url, headers=self.headers, params=params)
+        response.raise_for_status()
+        
+        data = response.json()
+        search_results = []
+        
+        # Get Bible info for the results
+        bible_info = self.get_bible_info(bible_id)
+        bible_name = bible_info.get("name", "Unknown Bible") if bible_info else "Unknown Bible"
+        
+        verses_data = data.get("data", {}).get("verses", [])
+        print(f"Found {len(verses_data)} verses")
+        
+        for verse in verses_data:
+            try:
+                # Handle different possible verse text fields
+                verse_text = verse.get("text", "")
+                if not verse_text:
+                    verse_text = verse.get("content", "")
+                
+                search_results.append(SearchResult(
+                    verse=VerseContent(
+                        id=verse["id"],
+                        reference=verse["reference"],
+                        content=self._clean_verse_text(verse_text)
+                    ),
+                    bible_id=bible_id,
+                    bible_name=bible_name
+                ))
+            except KeyError as ke:
+                print(f"Missing required field in verse data: {ke}")
+                continue
+        
+        return search_results
+    
+    def _is_verse_reference(self, query: str) -> bool:
+        """Check if the query looks like a verse reference"""
+        import re
+        # Common verse reference patterns
+        patterns = [
+            r'^\d*\s*\w+\s+\d+:\d+',  # John 3:16, 1 John 3:16
+            r'^\w+\s+\d+:\d+',        # John 3:16
+            r'^\d*\s*\w+\s+\d+',      # John 3, 1 John 3
+            r'^\w+\s+\d+$',           # John 3
+        ]
+        
+        for pattern in patterns:
+            if re.match(pattern, query.strip(), re.IGNORECASE):
+                return True
+        return False
+    
+    
+    def _search_specific_verse(self, query: str, bible_id: str) -> Optional[SearchResult]:
+        """Search for a specific verse using book/chapter/verse structure"""
+        try:
+            book_name, chapter, verse = self._parse_verse_reference(query)
+            if not all([book_name, chapter, verse]):
+                return None
+            
+            # Get the book ID
+            book_id = self._get_book_id(bible_id, book_name)
+            if not book_id:
+                print(f"Could not find book: {book_name}")
+                return None
+            
+            # Construct the verse ID
+            verse_id = f"{book_id}.{chapter}.{verse}"
+            print(f"Trying verse ID: {verse_id}")
+            
+            # Try to get the verse directly
+            verse_content = self.get_verse(verse_id, bible_id)
+            if verse_content:
+                bible_info = self.get_bible_info(bible_id)
+                bible_name = bible_info.get("name", "Unknown Bible") if bible_info else "Unknown Bible"
+                
+                return SearchResult(
+                    verse=verse_content,
+                    bible_id=bible_id,
+                    bible_name=bible_name
+                )
+            
+        except Exception as e:
+            print(f"Error in specific verse search: {e}")
+        
+        return None
+    
+    def _search_verse_by_keywords(self, query: str, bible_id: str, limit: int) -> List[SearchResult]:
+        """Search for verses by using known keywords for famous verses"""
+        # Map famous verse references to their key phrases
+        verse_keywords = {
+            "john 3:16": ["God so loved the world", "For God so loved", "only begotten"],
+            "psalm 23:1": ["Lord is my shepherd", "shepherd I shall not want"],
+            "romans 3:23": ["all have sinned", "fall short of the glory"],
+            "ephesians 2:8": ["saved by grace", "grace through faith"],
+            "philippians 4:13": ["can do all things", "strengthens me"],
+            "1 corinthians 13:4": ["love is patient", "love is kind"],
+            "matthew 28:19": ["baptizing them in the name", "Great Commission"],
+            "john 14:6": ["I am the way", "way truth and life"],
+            "romans 8:28": ["all things work together", "work together for good"],
+            "jeremiah 29:11": ["plans to prosper", "plans for welfare"],
+        }
+        
+        query_lower = query.lower().strip()
+        
+        # Find matching keywords
+        for verse_ref, keywords in verse_keywords.items():
+            if query_lower == verse_ref or query_lower.replace(":", " ") in verse_ref:
+                print(f"Using keywords for {verse_ref}: {keywords}")
+                
+                for keyword in keywords:
+                    results = self._perform_search(keyword, bible_id, 1)
+                    if results:
+                        print(f"Found verse using keyword: '{keyword}'")
+                        return results
+        
+        # If no specific keywords found, try the book name
+        book_name = self._extract_book_name(query)
+        if book_name:
+            print(f"Searching for book name: {book_name}")
+            return self._perform_search(book_name, bible_id, limit)
+        
+        return []
+    
+    def _parse_verse_reference(self, query: str) -> tuple:
+        """Parse a verse reference like 'John 3:16' into components"""
+        import re
+        
+        # Handle various formats
+        patterns = [
+            r'^(\d*\s*\w+)\s+(\d+):(\d+)$',  # John 3:16, 1 John 3:16
+            r'^(\w+)\s+(\d+):(\d+)$',        # John 3:16
+        ]
+        
+        for pattern in patterns:
+            match = re.match(pattern, query.strip(), re.IGNORECASE)
+            if match:
+                book_name = match.group(1).strip()
+                chapter = match.group(2)
+                verse = match.group(3)
+                return book_name, chapter, verse
+        
+        return None, None, None
+    
+    def _get_book_id(self, bible_id: str, book_name: str) -> Optional[str]:
+        """Get the book ID for a given book name"""
+        try:
+            response = requests.get(f"{self.base_url}/bibles/{bible_id}/books", headers=self.headers)
+            if response.status_code != 200:
+                return None
+            
+            books = response.json().get("data", [])
+            book_name_lower = book_name.lower().strip()
+            
+            # Direct name match
+            for book in books:
+                if book.get("name", "").lower().strip() == book_name_lower:
+                    return book.get("id")
+            
+            # Partial name match
+            for book in books:
+                if book_name_lower in book.get("name", "").lower():
+                    return book.get("id")
+            
+            # Common abbreviations
+            abbreviations = {
+                "john": "JHN",
+                "matthew": "MAT",
+                "mark": "MRK",
+                "luke": "LUK",
+                "acts": "ACT",
+                "romans": "ROM",
+                "1 corinthians": "1CO",
+                "2 corinthians": "2CO",
+                "galatians": "GAL",
+                "ephesians": "EPH",
+                "philippians": "PHP",
+                "colossians": "COL",
+                "1 thessalonians": "1TH",
+                "2 thessalonians": "2TH",
+                "1 timothy": "1TI",
+                "2 timothy": "2TI",
+                "titus": "TIT",
+                "philemon": "PHM",
+                "hebrews": "HEB",
+                "james": "JAS",
+                "1 peter": "1PE",
+                "2 peter": "2PE",
+                "1 john": "1JN",
+                "2 john": "2JN",
+                "3 john": "3JN",
+                "jude": "JUD",
+                "revelation": "REV",
+                "genesis": "GEN",
+                "exodus": "EXO",
+                "leviticus": "LEV",
+                "numbers": "NUM",
+                "deuteronomy": "DEU",
+                "joshua": "JOS",
+                "judges": "JDG",
+                "ruth": "RUT",
+                "1 samuel": "1SA",
+                "2 samuel": "2SA",
+                "1 kings": "1KI",
+                "2 kings": "2KI",
+                "1 chronicles": "1CH",
+                "2 chronicles": "2CH",
+                "ezra": "EZR",
+                "nehemiah": "NEH",
+                "esther": "EST",
+                "job": "JOB",
+                "psalm": "PSA",
+                "psalms": "PSA",
+                "proverbs": "PRO",
+                "ecclesiastes": "ECC",
+                "song of solomon": "SOS",
+                "isaiah": "ISA",
+                "jeremiah": "JER",
+                "lamentations": "LAM",
+                "ezekiel": "EZK",
+                "daniel": "DAN",
+                "hosea": "HOS",
+                "joel": "JOL",
+                "amos": "AMO",
+                "obadiah": "OBA",
+                "jonah": "JON",
+                "micah": "MIC",
+                "nahum": "NAM",
+                "habakkuk": "HAB",
+                "zephaniah": "ZEP",
+                "haggai": "HAG",
+                "zechariah": "ZEC",
+                "malachi": "MAL",
+            }
+            
+            abbr = abbreviations.get(book_name_lower)
+            if abbr:
+                for book in books:
+                    if book.get("id") == abbr:
+                        return abbr
+            
+        except Exception as e:
+            print(f"Error getting book ID: {e}")
+        
+        return None
+    
+    def _extract_book_name(self, query: str) -> Optional[str]:
+        """Extract book name from a verse reference"""
+        import re
+        
+        match = re.match(r'^(\d*\s*\w+)', query.strip(), re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        
+        return None
     
     def get_verse(self, verse_id: str, bible_id: str) -> Optional[VerseContent]:
         """Get a specific verse by ID"""
