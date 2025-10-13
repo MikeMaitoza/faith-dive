@@ -205,9 +205,9 @@ class BibleAPIService:
                 print(f"Detected verse reference: '{query}'")
                 
                 # Try to get the specific verse using structured approach
-                verse_result = self._search_specific_verse(query, bible_id)
-                if verse_result:
-                    return [verse_result]
+                verse_results = self._search_specific_verse(query, bible_id)
+                if verse_results:
+                    return verse_results
                 
                 # If specific verse search fails, try keyword-based approach
                 print(f"Specific verse search failed, trying keyword approach...")
@@ -285,7 +285,7 @@ class BibleAPIService:
         return False
     
     
-    def _search_specific_verse(self, query: str, bible_id: str) -> Optional[SearchResult]:
+    def _search_specific_verse(self, query: str, bible_id: str) -> List[SearchResult]:
         """Search for a specific verse using book/chapter/verse structure"""
         try:
             book_name, chapter, verse = self._parse_verse_reference(query)
@@ -293,17 +293,18 @@ class BibleAPIService:
             # Handle chapter-only references (e.g., "John 3")
             if book_name and chapter and not verse:
                 print(f"Chapter-only reference detected: {book_name} {chapter}")
-                return self._search_chapter_verses(query, bible_id, book_name, chapter)
+                chapter_results = self._search_chapter_verses(query, bible_id, book_name, chapter)
+                return chapter_results
             
             # Handle full verse references (e.g., "John 3:16")
             if not all([book_name, chapter, verse]):
-                return None
+                return []
             
             # Get the book ID
             book_id = self._get_book_id(bible_id, book_name)
             if not book_id:
                 print(f"Could not find book: {book_name}")
-                return None
+                return []
             
             # Construct the verse ID
             verse_id = f"{book_id}.{chapter}.{verse}"
@@ -315,47 +316,115 @@ class BibleAPIService:
                 bible_info = self.get_bible_info(bible_id)
                 bible_name = bible_info.get("name", "Unknown Bible") if bible_info else "Unknown Bible"
                 
-                return SearchResult(
+                return [SearchResult(
                     verse=verse_content,
                     bible_id=bible_id,
                     bible_name=bible_name
-                )
+                )]
             
         except Exception as e:
             print(f"Error in specific verse search: {e}")
         
-        return None
+        return []
     
-    def _search_chapter_verses(self, query: str, bible_id: str, book_name: str, chapter: str) -> Optional[SearchResult]:
-        """Search for verses in a specific chapter by falling back to text search"""
+    def _search_chapter_verses(self, query: str, bible_id: str, book_name: str, chapter: str) -> List[SearchResult]:
+        """Get all verses from a specific chapter using the API.Bible chapters endpoint"""
         try:
-            # Use the chapter reference as a search query to find verses from that chapter
-            chapter_query = f"{book_name} {chapter}"
-            print(f"Searching for chapter content: '{chapter_query}'")
+            # Get the book ID first
+            book_id = self._get_book_id(bible_id, book_name)
+            if not book_id:
+                print(f"Could not find book: {book_name}")
+                return []
             
-            # Perform a regular search but look for results that match the chapter
-            results = self._perform_search(chapter_query, bible_id, 20)  # Get more results to filter
+            # Try to get the chapter content directly from API
+            chapter_id = f"{book_id}.{chapter}"
+            print(f"Fetching chapter: {chapter_id} from Bible {bible_id}")
             
-            # Filter results to only include verses from the requested chapter
-            for result in results:
-                verse_ref = result.verse.reference.lower()
-                book_lower = book_name.lower()
+            # Get chapter content
+            chapter_verses = self._get_chapter_content(bible_id, chapter_id)
+            if chapter_verses:
+                return chapter_verses
+            
+            # Fallback: try to get individual verses from the chapter (1-50 verses should cover most chapters)
+            print(f"Chapter endpoint failed, trying individual verses...")
+            chapter_results = []
+            
+            for verse_num in range(1, 51):  # Most chapters have fewer than 50 verses
+                verse_id = f"{book_id}.{chapter}.{verse_num}"
+                verse_content = self.get_verse(verse_id, bible_id)
                 
-                # Check if this verse is from the requested book and chapter
-                if (book_lower in verse_ref and 
-                    f" {chapter}:" in verse_ref):
-                    print(f"Found matching verse: {result.verse.reference}")
-                    return result
+                if verse_content:
+                    bible_info = self.get_bible_info(bible_id)
+                    bible_name = bible_info.get("name", "Unknown Bible") if bible_info else "Unknown Bible"
+                    
+                    chapter_results.append(SearchResult(
+                        verse=verse_content,
+                        bible_id=bible_id,
+                        bible_name=bible_name
+                    ))
+                else:
+                    # If we can't find a verse, we've probably reached the end of the chapter
+                    break
             
-            # If no exact match, return the first result from the search
-            if results:
-                print(f"No exact chapter match, returning first result: {results[0].verse.reference}")
-                return results[0]
+            if chapter_results:
+                print(f"Found {len(chapter_results)} verses in {book_name} {chapter}")
+                return chapter_results
             
         except Exception as e:
             print(f"Error in chapter search: {e}")
         
-        return None
+        return []
+    
+    def _get_chapter_content(self, bible_id: str, chapter_id: str) -> List[SearchResult]:
+        """Try to get chapter content using the chapters API endpoint"""
+        try:
+            response = requests.get(
+                f"{self.base_url}/bibles/{bible_id}/chapters/{chapter_id}",
+                headers=self.headers
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                chapter_data = data.get("data")
+                
+                if chapter_data and chapter_data.get("content"):
+                    # Parse the chapter content to extract individual verses
+                    return self._parse_chapter_content(chapter_data, bible_id)
+            
+        except Exception as e:
+            print(f"Error fetching chapter content: {e}")
+        
+        return []
+    
+    def _parse_chapter_content(self, chapter_data: dict, bible_id: str) -> List[SearchResult]:
+        """Parse chapter content into individual verse results"""
+        results = []
+        
+        try:
+            content = chapter_data.get("content", "")
+            reference = chapter_data.get("reference", "")
+            
+            # Get Bible name
+            bible_info = self.get_bible_info(bible_id)
+            bible_name = bible_info.get("name", "Unknown Bible") if bible_info else "Unknown Bible"
+            
+            # For now, return the entire chapter as one result
+            # This is a simplified approach - ideally we'd parse individual verses
+            if content:
+                results.append(SearchResult(
+                    verse=VerseContent(
+                        id=chapter_data.get("id", ""),
+                        reference=reference,
+                        content=self._clean_verse_text(content)
+                    ),
+                    bible_id=bible_id,
+                    bible_name=bible_name
+                ))
+        
+        except Exception as e:
+            print(f"Error parsing chapter content: {e}")
+        
+        return results
     
     def _search_verse_by_keywords(self, query: str, bible_id: str, limit: int) -> List[SearchResult]:
         """Search for verses by using known keywords for famous verses"""
