@@ -77,11 +77,23 @@ async function loadBibleVersions() {
         const select = document.getElementById('bibleVersion');
         select.innerHTML = '<option value="">Select a Bible version...</option>';
         
-        bibleVersions.forEach(bible => {
-            const option = document.createElement('option');
-            option.value = bible.id;
-            option.textContent = `${bible.name} (${bible.abbreviation})`;
-            select.appendChild(option);
+        // Group Bibles by language for better organization
+        const biblesByLanguage = groupBiblesByLanguage(bibleVersions);
+        
+        // Add Bible versions organized by language groups
+        Object.keys(biblesByLanguage).forEach(language => {
+            const optGroup = document.createElement('optgroup');
+            optGroup.label = language;
+            
+            biblesByLanguage[language].forEach(bible => {
+                const option = document.createElement('option');
+                option.value = bible.id;
+                const abbreviation = bible.abbreviation ? ` (${bible.abbreviation})` : '';
+                option.textContent = `${bible.name}${abbreviation}`;
+                optGroup.appendChild(option);
+            });
+            
+            select.appendChild(optGroup);
         });
         
         // Select first version by default
@@ -92,6 +104,40 @@ async function loadBibleVersions() {
         console.error('Error loading Bible versions:', error);
         showNotification('Error loading Bible versions', 'error');
     }
+}
+
+function groupBiblesByLanguage(bibles) {
+    const grouped = {};
+    
+    bibles.forEach(bible => {
+        const language = bible.language || 'Unknown';
+        
+        if (!grouped[language]) {
+            grouped[language] = [];
+        }
+        
+        grouped[language].push(bible);
+    });
+    
+    // Sort languages to prioritize English first
+    const sortedGrouped = {};
+    const languageOrder = ['English', 'Spanish', 'Portuguese', 'French', 'German', 'Norwegian', 'Swedish', 'Finnish', 'Greek', 'Belarussian', 'Ukrainian', 'Polish', 'Estonian', 'Latvian', 'Lithuanian', 'Dutch', 'Mandarin Chinese', 'Urdu', 'Hebrew', 'Czech', 'Indonesian', 'Swahili', 'Turkish', 'Arabic', 'Kurdish', 'Haitian Creole', 'Hungarian', 'Icelandic', 'Italian', 'Romanian', 'Nepali', 'Cape Verdean Creole', "K'iche'", 'Slovak', 'Tonga', 'Japanese', 'Yiddish', 'Thai', 'Hindi', 'Bengali', 'Vietnamese', 'Serbian', 'Malaysian', 'Punjabi', 'Persian'];
+    
+    // Add languages in preferred order
+    languageOrder.forEach(lang => {
+        if (grouped[lang]) {
+            sortedGrouped[lang] = grouped[lang];
+        }
+    });
+    
+    // Add any remaining languages not in the preferred list
+    Object.keys(grouped).forEach(lang => {
+        if (!sortedGrouped[lang]) {
+            sortedGrouped[lang] = grouped[lang];
+        }
+    });
+    
+    return sortedGrouped;
 }
 
 async function searchVerses() {

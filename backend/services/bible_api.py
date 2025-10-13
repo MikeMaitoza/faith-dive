@@ -12,30 +12,79 @@ class BibleAPIService:
             "Content-Type": "application/json"
         }
     
+    def get_supported_languages(self) -> Dict[str, str]:
+        """Get mapping of supported language codes to language names"""
+        return {
+            'eng': 'English',
+            'spa': 'Spanish', 
+            'por': 'Portuguese',
+            'fra': 'French',
+            'deu': 'German',
+            'nor': 'Norwegian',
+            'swe': 'Swedish',
+            'fin': 'Finnish',
+            'ell': 'Greek',
+            'bel': 'Belarussian',
+            'ukr': 'Ukrainian',
+            'pol': 'Polish',
+            'est': 'Estonian',
+            'lav': 'Latvian',
+            'lit': 'Lithuanian',
+            'nld': 'Dutch',
+            'cmn': 'Mandarin Chinese',
+            'urd': 'Urdu',
+            'heb': 'Hebrew',
+            'ces': 'Czech',
+            'ind': 'Indonesian',
+            'swa': 'Swahili',
+            'tur': 'Turkish',
+            'ara': 'Arabic',
+            'ckb': 'Kurdish',
+            'hat': 'Haitian Creole',
+            'hun': 'Hungarian',
+            'isl': 'Icelandic',
+            'ita': 'Italian',
+            'ron': 'Romanian',
+            'nep': 'Nepali',
+            'kab': 'Cape Verdean Creole',
+            'quc': "K'iche'",
+            'slk': 'Slovak',
+            'ton': 'Tonga',
+            'jpn': 'Japanese',
+            'yid': 'Yiddish',
+            'tha': 'Thai',
+            'hin': 'Hindi',
+            'ben': 'Bengali',
+            'vie': 'Vietnamese',
+            'srp': 'Serbian',
+            'msa': 'Malaysian',
+            'pan': 'Punjabi',
+            'fas': 'Persian',
+        }
+    
     def get_english_bibles(self) -> List[BibleVersion]:
         """Get all English Bible versions with preferred versions prioritized"""
+        return self.get_bibles_by_language('eng')
+    
+    def get_all_supported_bibles(self) -> List[BibleVersion]:
+        """Get all Bible versions in supported languages, organized by preference"""
         try:
             response = requests.get(f"{self.base_url}/bibles", headers=self.headers)
             response.raise_for_status()
             
             data = response.json()
-            english_bibles = []
-            preferred_bibles = []
+            supported_languages = self.get_supported_languages()
             
-            # Define preferred Bible versions based on what's actually available
-            # Premium versions (NIV, NASB, NET) require higher API tier
-            # Using best available free versions
-            preferred_abbreviations = ['WEB', 'BSB', 'ASV', 'KJV']
-            preferred_names = [
-                'World English Bible',
-                'Berean Standard Bible',
-                'American Standard Version',
-                'King James'
-            ]
+            # Organize bibles by language with English first
+            language_priority = ['eng', 'spa', 'por', 'fra', 'deu', 'nor', 'swe', 'fin', 'ell', 'bel', 'ukr', 'pol', 'est', 'lav', 'lit', 'nld', 'cmn', 'urd', 'heb', 'ces', 'ind', 'swa', 'tur', 'ara', 'ckb', 'hat', 'hun', 'isl', 'ita', 'ron', 'nep', 'kab', 'quc', 'slk', 'ton', 'jpn', 'yid', 'tha', 'hin', 'ben', 'vie', 'srp', 'msa', 'pan', 'fas']
+            
+            bibles_by_language = {lang: [] for lang in supported_languages.keys()}
             
             for bible in data.get("data", []):
-                # Filter for English language bibles
-                if bible.get("language", {}).get("id") == "eng":
+                lang_id = bible.get("language", {}).get("id", "")
+                
+                # Only include supported languages
+                if lang_id in supported_languages:
                     bible_version = BibleVersion(
                         id=bible["id"],
                         name=bible["name"],
@@ -43,49 +92,113 @@ class BibleAPIService:
                         abbreviation=bible.get("abbreviation", ""),
                         description=bible.get("description", "")
                     )
-                    
-                    # Check if this is a preferred Bible version
-                    is_preferred = (
-                        bible_version.abbreviation in preferred_abbreviations or
-                        any(pref_name.lower() in bible_version.name.lower() for pref_name in preferred_names)
-                    )
-                    
-                    if is_preferred:
-                        preferred_bibles.append(bible_version)
-                    else:
-                        english_bibles.append(bible_version)
+                    bibles_by_language[lang_id].append(bible_version)
             
-            # Sort preferred Bibles to maintain NIV, NASB, NET order
-            def sort_preferred(bible):
-                for i, abbr in enumerate(preferred_abbreviations):
-                    if abbr in bible.abbreviation or abbr.lower() in bible.name.lower():
-                        return i
-                for i, name in enumerate(preferred_names):
-                    if name.lower() in bible.name.lower():
-                        return i
-                return 999
+            # Sort bibles within each language and compile final list
+            all_bibles = []
             
-            preferred_bibles.sort(key=sort_preferred)
+            # Handle English first with preferred ordering
+            if bibles_by_language['eng']:
+                english_bibles = self._sort_english_bibles(bibles_by_language['eng'])
+                all_bibles.extend(english_bibles)
             
-            # Return preferred Bibles first, then others alphabetically
-            english_bibles.sort(key=lambda x: x.name)
-            return preferred_bibles + english_bibles
+            # Add other languages in priority order
+            for lang_id in language_priority[1:]:  # Skip English as it's already added
+                if bibles_by_language[lang_id]:
+                    # Sort alphabetically within language
+                    bibles_by_language[lang_id].sort(key=lambda x: x.name)
+                    all_bibles.extend(bibles_by_language[lang_id])
+            
+            return all_bibles
             
         except requests.RequestException as e:
             print(f"Error fetching Bible versions: {e}")
             return []
     
+    def get_bibles_by_language(self, language_id: str) -> List[BibleVersion]:
+        """Get Bible versions for a specific language"""
+        try:
+            response = requests.get(f"{self.base_url}/bibles", headers=self.headers)
+            response.raise_for_status()
+            
+            data = response.json()
+            language_bibles = []
+            
+            for bible in data.get("data", []):
+                if bible.get("language", {}).get("id") == language_id:
+                    bible_version = BibleVersion(
+                        id=bible["id"],
+                        name=bible["name"],
+                        language=bible["language"]["name"],
+                        abbreviation=bible.get("abbreviation", ""),
+                        description=bible.get("description", "")
+                    )
+                    language_bibles.append(bible_version)
+            
+            # Special handling for English with preferred ordering
+            if language_id == 'eng':
+                return self._sort_english_bibles(language_bibles)
+            else:
+                # Sort alphabetically for other languages
+                language_bibles.sort(key=lambda x: x.name)
+                return language_bibles
+            
+        except requests.RequestException as e:
+            print(f"Error fetching {language_id} Bible versions: {e}")
+            return []
+    
+    def _sort_english_bibles(self, english_bibles: List[BibleVersion]) -> List[BibleVersion]:
+        """Sort English bibles with preferred versions first"""
+        preferred_bibles = []
+        other_bibles = []
+        
+        # Define preferred Bible versions based on what's actually available
+        preferred_abbreviations = ['WEB', 'BSB', 'ASV', 'KJV']
+        preferred_names = [
+            'World English Bible',
+            'Berean Standard Bible',
+            'American Standard Version',
+            'King James'
+        ]
+        
+        for bible_version in english_bibles:
+            # Check if this is a preferred Bible version
+            is_preferred = (
+                bible_version.abbreviation in preferred_abbreviations or
+                any(pref_name.lower() in bible_version.name.lower() for pref_name in preferred_names)
+            )
+            
+            if is_preferred:
+                preferred_bibles.append(bible_version)
+            else:
+                other_bibles.append(bible_version)
+        
+        # Sort preferred Bibles to maintain priority order
+        def sort_preferred(bible):
+            for i, abbr in enumerate(preferred_abbreviations):
+                if abbr in bible.abbreviation or abbr.lower() in bible.name.lower():
+                    return i
+            for i, name in enumerate(preferred_names):
+                if name.lower() in bible.name.lower():
+                    return i
+            return 999
+        
+        preferred_bibles.sort(key=sort_preferred)
+        other_bibles.sort(key=lambda x: x.name)
+        
+        return preferred_bibles + other_bibles
+    
     def search_verses(self, query: str, bible_id: Optional[str] = None, limit: int = 10) -> List[SearchResult]:
         """Search for verses containing the query text or by verse reference"""
         try:
-            # If no bible_id specified, use the first available English Bible (which will be preferred)
+            # If no bible_id specified, use the first available Bible (preferred English first)
             if not bible_id:
-                english_bibles = self.get_english_bibles()
-                if not english_bibles:
-                    print("No English Bibles available")
+                all_bibles = self.get_all_supported_bibles()
+                if not all_bibles:
+                    print("No Bibles available")
                     return []
-                bible_id = english_bibles[0].id
-                print(f"Using default Bible: {english_bibles[0].name} ({bible_id})")
+                bible_id = all_bibles[0].id
+                print(f"Using default Bible: {all_bibles[0].name} ({bible_id})")
             
             # Check if this looks like a verse reference
             if self._is_verse_reference(query):

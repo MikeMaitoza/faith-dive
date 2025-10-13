@@ -37,9 +37,21 @@ app.add_middleware(
 
 # Bible API Routes
 @app.get(f"{settings.api_prefix}/bibles", response_model=List[schemas.BibleVersion])
+async def get_all_bibles():
+    """Get all available Bible versions in supported languages"""
+    bibles = bible_api_service.get_all_supported_bibles()
+    return bibles
+
+@app.get(f"{settings.api_prefix}/bibles/english", response_model=List[schemas.BibleVersion])
 async def get_english_bibles():
-    """Get all available English Bible versions"""
+    """Get all available English Bible versions (for backward compatibility)"""
     bibles = bible_api_service.get_english_bibles()
+    return bibles
+
+@app.get(f"{settings.api_prefix}/bibles/language/{language_id}", response_model=List[schemas.BibleVersion])
+async def get_bibles_by_language(language_id: str):
+    """Get Bible versions for a specific language"""
+    bibles = bible_api_service.get_bibles_by_language(language_id)
     return bibles
 
 @app.post(f"{settings.api_prefix}/search", response_model=List[schemas.SearchResult])
