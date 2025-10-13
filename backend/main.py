@@ -48,7 +48,7 @@ async def get_english_bibles():
     bibles = bible_api_service.get_english_bibles()
     return bibles
 
-@app.get(f"{settings.api_prefix}/bibles/language/{language_id}", response_model=List[schemas.BibleVersion])
+@app.get(f"{settings.api_prefix}/bibles/language/{{language_id}}", response_model=List[schemas.BibleVersion])
 async def get_bibles_by_language(language_id: str):
     """Get Bible versions for a specific language"""
     bibles = bible_api_service.get_bibles_by_language(language_id)

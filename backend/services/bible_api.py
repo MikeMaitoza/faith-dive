@@ -289,6 +289,13 @@ class BibleAPIService:
         """Search for a specific verse using book/chapter/verse structure"""
         try:
             book_name, chapter, verse = self._parse_verse_reference(query)
+            
+            # Handle chapter-only references (e.g., "John 3")
+            if book_name and chapter and not verse:
+                print(f"Chapter-only reference detected: {book_name} {chapter}")
+                return self._search_chapter_verses(query, bible_id, book_name, chapter)
+            
+            # Handle full verse references (e.g., "John 3:16")
             if not all([book_name, chapter, verse]):
                 return None
             
@@ -319,6 +326,37 @@ class BibleAPIService:
         
         return None
     
+    def _search_chapter_verses(self, query: str, bible_id: str, book_name: str, chapter: str) -> Optional[SearchResult]:
+        """Search for verses in a specific chapter by falling back to text search"""
+        try:
+            # Use the chapter reference as a search query to find verses from that chapter
+            chapter_query = f"{book_name} {chapter}"
+            print(f"Searching for chapter content: '{chapter_query}'")
+            
+            # Perform a regular search but look for results that match the chapter
+            results = self._perform_search(chapter_query, bible_id, 20)  # Get more results to filter
+            
+            # Filter results to only include verses from the requested chapter
+            for result in results:
+                verse_ref = result.verse.reference.lower()
+                book_lower = book_name.lower()
+                
+                # Check if this verse is from the requested book and chapter
+                if (book_lower in verse_ref and 
+                    f" {chapter}:" in verse_ref):
+                    print(f"Found matching verse: {result.verse.reference}")
+                    return result
+            
+            # If no exact match, return the first result from the search
+            if results:
+                print(f"No exact chapter match, returning first result: {results[0].verse.reference}")
+                return results[0]
+            
+        except Exception as e:
+            print(f"Error in chapter search: {e}")
+        
+        return None
+    
     def _search_verse_by_keywords(self, query: str, bible_id: str, limit: int) -> List[SearchResult]:
         """Search for verses by using known keywords for famous verses"""
         # Map famous verse references to their key phrases
@@ -337,10 +375,11 @@ class BibleAPIService:
         
         query_lower = query.lower().strip()
         
-        # Find matching keywords
+        # Only use exact matches for specific verse references to avoid confusion
+        # For example, "john 3:16" should match exactly, not "john 3"
         for verse_ref, keywords in verse_keywords.items():
-            if query_lower == verse_ref or query_lower.replace(":", " ") in verse_ref:
-                print(f"Using keywords for {verse_ref}: {keywords}")
+            if query_lower == verse_ref:
+                print(f"Using keywords for exact match {verse_ref}: {keywords}")
                 
                 for keyword in keywords:
                     results = self._perform_search(keyword, bible_id, 1)
@@ -348,7 +387,7 @@ class BibleAPIService:
                         print(f"Found verse using keyword: '{keyword}'")
                         return results
         
-        # If no specific keywords found, try the book name
+        # If no specific keywords found, try a general search with the book name
         book_name = self._extract_book_name(query)
         if book_name:
             print(f"Searching for book name: {book_name}")
@@ -357,22 +396,30 @@ class BibleAPIService:
         return []
     
     def _parse_verse_reference(self, query: str) -> tuple:
-        """Parse a verse reference like 'John 3:16' into components"""
+        """Parse a verse reference like 'John 3:16' or 'John 3' into components"""
         import re
         
-        # Handle various formats
+        # Handle various formats - order matters, try specific patterns first
         patterns = [
-            r'^(\d*\s*\w+)\s+(\d+):(\d+)$',  # John 3:16, 1 John 3:16
-            r'^(\w+)\s+(\d+):(\d+)$',        # John 3:16
+            r'^(\d*\s*\w+)\s+(\d+):(\d+)$',  # John 3:16, 1 John 3:16 (with verse)
+            r'^(\w+)\s+(\d+):(\d+)$',        # John 3:16 (with verse)
+            r'^(\d*\s*\w+)\s+(\d+)$',       # John 3, 1 John 3 (chapter only)
+            r'^(\w+)\s+(\d+)$',              # John 3 (chapter only)
         ]
         
-        for pattern in patterns:
+        for i, pattern in enumerate(patterns):
             match = re.match(pattern, query.strip(), re.IGNORECASE)
             if match:
                 book_name = match.group(1).strip()
                 chapter = match.group(2)
-                verse = match.group(3)
-                return book_name, chapter, verse
+                
+                # First two patterns include verse numbers
+                if i < 2:
+                    verse = match.group(3)
+                    return book_name, chapter, verse
+                # Last two patterns are chapter-only
+                else:
+                    return book_name, chapter, None
         
         return None, None, None
     
