@@ -11,6 +11,9 @@ from backend.core.config import settings
 from backend.database.connection import get_db, create_tables
 from backend.models import database, schemas
 from backend.services.bible_api import bible_api_service
+from backend.services.study_scheduler import study_scheduler
+from sqlalchemy import func, and_
+from collections import Counter
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -201,6 +204,333 @@ if os.path.exists(frontend_build_path):
     @app.get("/sw.js")
     async def serve_service_worker():
         return FileResponse(os.path.join(frontend_build_path, "sw.js"))
+
+# Weekly Study Routes
+@app.post(f"{settings.api_prefix}/studies", response_model=schemas.WeeklyStudyResponse)
+async def create_weekly_study(
+    study: schemas.WeeklyStudyCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new weekly Bible study"""
+    db_study = database.WeeklyStudy(
+        title=study.title,
+        description=study.description,
+        verse_references=study.verse_references,
+        verse_texts=study.verse_texts,
+        bible_version=study.bible_version,
+        bible_id=study.bible_id,
+        study_questions=study.study_questions,
+        study_notes=study.study_notes,
+        scheduled_date=study.scheduled_date
+    )
+    
+    # If no scheduled date provided, auto-schedule for next Wednesday
+    if not study.scheduled_date:
+        study_scheduler.schedule_study_for_next_wednesday(db, db_study)
+    
+    db.add(db_study)
+    db.commit()
+    db.refresh(db_study)
+    
+    # Add response count
+    response = schemas.WeeklyStudyResponse.model_validate(db_study)
+    response.response_count = 0
+    return response
+
+@app.get(f"{settings.api_prefix}/studies", response_model=List[schemas.WeeklyStudyResponse])
+async def get_weekly_studies(
+    published_only: bool = True,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """Get all weekly studies"""
+    query = db.query(database.WeeklyStudy)
+    if published_only:
+        query = query.filter(database.WeeklyStudy.published == True)
+    
+    studies = query.order_by(database.WeeklyStudy.scheduled_date.desc()).offset(skip).limit(limit).all()
+    
+    # Add response counts
+    result = []
+    for study in studies:
+        study_response = schemas.WeeklyStudyResponse.model_validate(study)
+        study_response.response_count = len([r for r in study.responses if not r.is_hidden])
+        result.append(study_response)
+    
+    return result
+
+@app.get(f"{settings.api_prefix}/studies/current", response_model=schemas.WeeklyStudyResponse)
+async def get_current_weekly_study(db: Session = Depends(get_db)):
+    """Get the current week's published study"""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    
+    study = db.query(database.WeeklyStudy).filter(
+        and_(
+            database.WeeklyStudy.published == True,
+            database.WeeklyStudy.scheduled_date <= now
+        )
+    ).order_by(database.WeeklyStudy.scheduled_date.desc()).first()
+    
+    if not study:
+        raise HTTPException(status_code=404, detail="No current study available")
+    
+    study_response = schemas.WeeklyStudyResponse.model_validate(study)
+    study_response.response_count = len([r for r in study.responses if not r.is_hidden])
+    return study_response
+
+@app.get(f"{settings.api_prefix}/studies/{{study_id}}", response_model=schemas.WeeklyStudyResponse)
+async def get_weekly_study(study_id: int, db: Session = Depends(get_db)):
+    """Get a specific weekly study"""
+    study = db.query(database.WeeklyStudy).filter(database.WeeklyStudy.id == study_id).first()
+    if not study:
+        raise HTTPException(status_code=404, detail="Study not found")
+    
+    study_response = schemas.WeeklyStudyResponse.model_validate(study)
+    study_response.response_count = len([r for r in study.responses if not r.is_hidden])
+    return study_response
+
+@app.put(f"{settings.api_prefix}/studies/{{study_id}}", response_model=schemas.WeeklyStudyResponse)
+async def update_weekly_study(
+    study_id: int,
+    study_update: schemas.WeeklyStudyUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update a weekly study"""
+    db_study = db.query(database.WeeklyStudy).filter(database.WeeklyStudy.id == study_id).first()
+    if not db_study:
+        raise HTTPException(status_code=404, detail="Study not found")
+    
+    # Update fields if provided
+    update_data = study_update.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        if field == "published" and value and not db_study.published:
+            # Mark as published with timestamp
+            from datetime import datetime, timezone
+            db_study.published_at = datetime.now(timezone.utc)
+        setattr(db_study, field, value)
+    
+    db.commit()
+    db.refresh(db_study)
+    
+    study_response = schemas.WeeklyStudyResponse.model_validate(db_study)
+    study_response.response_count = len([r for r in db_study.responses if not r.is_hidden])
+    return study_response
+
+@app.delete(f"{settings.api_prefix}/studies/{{study_id}}")
+async def delete_weekly_study(study_id: int, db: Session = Depends(get_db)):
+    """Delete a weekly study"""
+    db_study = db.query(database.WeeklyStudy).filter(database.WeeklyStudy.id == study_id).first()
+    if not db_study:
+        raise HTTPException(status_code=404, detail="Study not found")
+    
+    db.delete(db_study)
+    db.commit()
+    return {"message": "Study deleted successfully"}
+
+# Study Response Routes
+@app.post(f"{settings.api_prefix}/studies/{{study_id}}/responses", response_model=schemas.StudyResponseResponse)
+async def create_study_response(
+    study_id: int,
+    response: schemas.StudyResponseCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new response to a study"""
+    # Verify study exists and is published
+    study = db.query(database.WeeklyStudy).filter(
+        and_(
+            database.WeeklyStudy.id == study_id,
+            database.WeeklyStudy.published == True
+        )
+    ).first()
+    if not study:
+        raise HTTPException(status_code=404, detail="Study not found or not published")
+    
+    db_response = database.StudyResponse(
+        study_id=study_id,
+        user_name=response.user_name.strip()[:100],  # Limit and clean name
+        response_text=response.response_text.strip()
+    )
+    db.add(db_response)
+    db.commit()
+    db.refresh(db_response)
+    
+    # Format response with empty reactions
+    result = schemas.StudyResponseResponse.model_validate(db_response)
+    result.reactions = []
+    return result
+
+@app.get(f"{settings.api_prefix}/studies/{{study_id}}/responses", response_model=List[schemas.StudyResponseResponse])
+async def get_study_responses(
+    study_id: int,
+    skip: int = 0,
+    limit: int = 100,
+    user_identifier: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Get responses for a study"""
+    responses = db.query(database.StudyResponse).filter(
+        and_(
+            database.StudyResponse.study_id == study_id,
+            database.StudyResponse.is_hidden == False
+        )
+    ).order_by(database.StudyResponse.created_at.desc()).offset(skip).limit(limit).all()
+    
+    result = []
+    for response in responses:
+        # Get reaction summary for this response
+        reactions_data = db.query(database.StudyReaction).filter(
+            database.StudyReaction.response_id == response.id
+        ).all()
+        
+        # Count reactions by type
+        reaction_counts = Counter(r.reaction_type for r in reactions_data)
+        user_reactions = set(r.reaction_type for r in reactions_data if r.user_identifier == user_identifier) if user_identifier else set()
+        
+        reaction_summaries = [
+            schemas.ReactionSummary(
+                reaction_type=reaction_type,
+                count=count,
+                user_reacted=reaction_type in user_reactions
+            )
+            for reaction_type, count in reaction_counts.items()
+        ]
+        
+        response_data = schemas.StudyResponseResponse.model_validate(response)
+        response_data.reactions = reaction_summaries
+        result.append(response_data)
+    
+    return result
+
+@app.put(f"{settings.api_prefix}/responses/{{response_id}}", response_model=schemas.StudyResponseResponse)
+async def update_study_response(
+    response_id: int,
+    response_update: schemas.StudyResponseUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update a study response"""
+    db_response = db.query(database.StudyResponse).filter(database.StudyResponse.id == response_id).first()
+    if not db_response:
+        raise HTTPException(status_code=404, detail="Response not found")
+    
+    if response_update.response_text:
+        db_response.response_text = response_update.response_text.strip()
+    
+    db.commit()
+    db.refresh(db_response)
+    
+    result = schemas.StudyResponseResponse.model_validate(db_response)
+    result.reactions = []  # Simplified for update response
+    return result
+
+@app.delete(f"{settings.api_prefix}/responses/{{response_id}}")
+async def delete_study_response(response_id: int, db: Session = Depends(get_db)):
+    """Delete a study response"""
+    db_response = db.query(database.StudyResponse).filter(database.StudyResponse.id == response_id).first()
+    if not db_response:
+        raise HTTPException(status_code=404, detail="Response not found")
+    
+    db.delete(db_response)
+    db.commit()
+    return {"message": "Response deleted successfully"}
+
+# Study Reaction Routes
+@app.post(f"{settings.api_prefix}/responses/{{response_id}}/reactions")
+async def toggle_reaction(
+    response_id: int,
+    reaction: schemas.StudyReactionCreate,
+    db: Session = Depends(get_db)
+):
+    """Toggle a reaction on a study response"""
+    # Check if response exists
+    response_exists = db.query(database.StudyResponse).filter(database.StudyResponse.id == response_id).first()
+    if not response_exists:
+        raise HTTPException(status_code=404, detail="Response not found")
+    
+    # Check if user already has this reaction
+    existing_reaction = db.query(database.StudyReaction).filter(
+        and_(
+            database.StudyReaction.response_id == response_id,
+            database.StudyReaction.user_identifier == reaction.user_identifier,
+            database.StudyReaction.reaction_type == reaction.reaction_type
+        )
+    ).first()
+    
+    if existing_reaction:
+        # Remove the reaction (toggle off)
+        db.delete(existing_reaction)
+        db.commit()
+        return {"message": "Reaction removed", "action": "removed"}
+    else:
+        # Add the reaction (toggle on)
+        db_reaction = database.StudyReaction(
+            response_id=response_id,
+            user_identifier=reaction.user_identifier,
+            reaction_type=reaction.reaction_type
+        )
+        db.add(db_reaction)
+        db.commit()
+        return {"message": "Reaction added", "action": "added"}
+
+# Community Guidelines Endpoint
+@app.get(f"{settings.api_prefix}/community-guidelines", response_model=schemas.CommunityGuidelines)
+async def get_community_guidelines():
+    """Get community guidelines for respectful discussion"""
+    return schemas.CommunityGuidelines()
+
+# Moderation Routes (Admin)
+@app.put(f"{settings.api_prefix}/responses/{{response_id}}/flag")
+async def flag_response(response_id: int, db: Session = Depends(get_db)):
+    """Flag a response for moderation"""
+    db_response = db.query(database.StudyResponse).filter(database.StudyResponse.id == response_id).first()
+    if not db_response:
+        raise HTTPException(status_code=404, detail="Response not found")
+    
+    db_response.is_flagged = True
+    db.commit()
+    return {"message": "Response flagged for review"}
+
+@app.put(f"{settings.api_prefix}/responses/{{response_id}}/hide")
+async def hide_response(response_id: int, db: Session = Depends(get_db)):
+    """Hide a response (admin only)"""
+    db_response = db.query(database.StudyResponse).filter(database.StudyResponse.id == response_id).first()
+    if not db_response:
+        raise HTTPException(status_code=404, detail="Response not found")
+    
+    db_response.is_hidden = True
+    db.commit()
+    return {"message": "Response hidden"}
+
+@app.get(f"{settings.api_prefix}/admin/flagged-responses", response_model=List[schemas.StudyResponseResponse])
+async def get_flagged_responses(db: Session = Depends(get_db)):
+    """Get all flagged responses for admin review"""
+    flagged = db.query(database.StudyResponse).filter(database.StudyResponse.is_flagged == True).all()
+    return [schemas.StudyResponseResponse.model_validate(r) for r in flagged]
+
+# Scheduler Routes (Admin)
+@app.post(f"{settings.api_prefix}/admin/publish-scheduled")
+async def publish_scheduled_studies():
+    """Manually trigger publishing of scheduled studies"""
+    published_count = study_scheduler.publish_scheduled_studies()
+    return {"message": f"Published {published_count} studies"}
+
+@app.get(f"{settings.api_prefix}/admin/upcoming-studies")
+async def get_upcoming_studies(limit: int = 10, db: Session = Depends(get_db)):
+    """Get upcoming unpublished studies"""
+    studies = study_scheduler.get_upcoming_studies(db, limit)
+    result = []
+    for study in studies:
+        study_response = schemas.WeeklyStudyResponse.model_validate(study)
+        study_response.response_count = 0  # Unpublished studies have no responses
+        result.append(study_response)
+    return result
+
+@app.get(f"{settings.api_prefix}/admin/next-wednesday")
+async def get_next_wednesday_date():
+    """Get the next Wednesday date for scheduling"""
+    next_wednesday = study_scheduler.get_next_wednesday()
+    return {"next_wednesday": next_wednesday.isoformat()}
 
 # Health check endpoint
 @app.get("/health")
