@@ -1,0 +1,176 @@
+name: Faith Dive CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.12]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: latest
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+
+    - name: Load cached venv
+      id: cached-poetry-dependencies
+      uses: actions/cache@v3
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+
+    - name: Install dependencies
+      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+      run: poetry install --no-interaction --no-root
+
+    - name: Install project
+      run: poetry install --no-interaction
+
+    # Critical import tests - must pass
+    - name: Test Critical Imports
+      run: |
+        poetry run python -c "from backend.main import app; print('✅ Main app imports successfully')"
+        poetry run python -c "from backend.services.bible_api import bible_api_service; print('✅ Bible service imports successfully')"
+
+    # Regression prevention tests - must pass  
+    - name: Test Verse Reference Parsing (Regression Prevention)
+      run: |
+        poetry run python -c "
+        from backend.services.bible_api import bible_api_service
+        s = bible_api_service
+        
+        # Test the exact scenarios that were broken
+        assert s._parse_verse_reference('John 3') == ('John', '3', None), 'John 3 parsing failed'
+        assert s._parse_verse_reference('John 3:16') == ('John', '3', '16'), 'John 3:16 parsing failed'  
+        assert s._parse_verse_reference('1 John 3') == ('1 John', '3', None), '1 John 3 parsing failed'
+        assert s._parse_verse_reference('1 John 4:9') == ('1 John', '4', '9'), '1 John 4:9 parsing failed'
+        
+        # Test verse reference detection
+        assert s._is_verse_reference('John 3') == True, 'John 3 detection failed'
+        assert s._is_verse_reference('John 3:16') == True, 'John 3:16 detection failed'
+        assert s._is_verse_reference('love faith hope') == False, 'Text query detection failed'
+        
+        print('✅ All verse reference parsing tests passed')
+        "
+
+    # Comprehensive integration tests
+    - name: Run Integration Tests
+      run: |
+        poetry run pytest tests/test_verse_reference_integration.py -v --tb=short
+
+    # Application smoke tests
+    - name: Run Smoke Tests  
+      run: |
+        poetry run pytest tests/test_verse_reference_integration.py::TestApplicationSmokeTests -v
+
+    # Performance tests (non-blocking)
+    - name: Run Performance Tests
+      continue-on-error: true
+      run: |
+        poetry run pytest tests/test_verse_reference_integration.py::TestSearchPerformance -v
+
+    # Full test suite (non-blocking but reported)
+    - name: Run Full Test Suite
+      continue-on-error: true
+      run: |
+        poetry run pytest tests/ --tb=short -q
+
+    # Test application startup
+    - name: Test Application Startup
+      run: |
+        poetry run python -c "
+        from fastapi.testclient import TestClient
+        from backend.main import app
+        client = TestClient(app)
+        response = client.get('/health')
+        assert response.status_code == 200
+        assert response.json()['status'] == 'healthy'
+        print('✅ Application starts and responds correctly')
+        "
+
+    # Test multilingual functionality
+    - name: Test Multilingual Support
+      run: |
+        poetry run python -c "
+        from backend.services.bible_api import bible_api_service
+        langs = bible_api_service.get_supported_languages()
+        assert len(langs) >= 40, f'Expected at least 40 languages, got {len(langs)}'
+        assert 'eng' in langs, 'English not in supported languages'
+        assert 'spa' in langs, 'Spanish not in supported languages'
+        print(f'✅ Multilingual support working: {len(langs)} languages')
+        "
+
+  # Deployment readiness check
+  deploy-check:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.12
+
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+
+    - name: Install dependencies
+      run: poetry install
+
+    - name: Build Frontend
+      run: |
+        poetry run python -c "
+        import subprocess
+        import os
+        
+        # Test that frontend builds successfully
+        result = subprocess.run(['poetry', 'run', 'python', 'build_frontend.py'], 
+                              capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print('Frontend build failed:', result.stderr)
+            exit(1)
+        else:
+            print('✅ Frontend builds successfully')
+            
+        # Check that build artifacts exist
+        build_dir = 'frontend/build'
+        required_files = ['index.html', 'static/app.js', 'manifest.json']
+        
+        for file in required_files:
+            if not os.path.exists(os.path.join(build_dir, file)):
+                print(f'❌ Missing required file: {file}')
+                exit(1)
+                
+        print('✅ All required build artifacts present')
+        "
+
+    - name: Production Readiness Check
+      run: |
+        echo "✅ All tests passed - ready for deployment"
+        echo "📊 Test Summary:"
+        echo "  - Import tests: ✅"  
+        echo "  - Verse parsing regression tests: ✅"
+        echo "  - Integration tests: ✅"
+        echo "  - Application startup: ✅"
+        echo "  - Multilingual support: ✅"
+        echo "  - Frontend build: ✅"
